@@ -1,0 +1,14 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: batch
+spec:
+  template:
+    spec:
+      containers:
+      - name: batch
+        image: takytaky/batch
+      restartPolicy: Never
+  
+  parallelism: 2
+  completions: 4

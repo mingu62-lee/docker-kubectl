@@ -1,2 +1,1 @@
-# docker-kubectl
-kubectl apply
+# docker-kubernetes

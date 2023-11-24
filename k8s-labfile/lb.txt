@@ -1,0 +1,73 @@
+
+LoadBalancer Type의 서비스 실습 ( With MetalLB ) 
+===================================================
+
+1.  To install MetalLB, apply the manifest:
+	# kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/v0.13.7/config/manifests/metallb-native.yaml
+	# kubectl get pods -n metallb-system
+
+	1) The metallb-system/controller deployment. This is the cluster-wide controller that handles IP address assignments.
+	2) The metallb-system/speaker daemonset. This is the component that speaks the protocol(s) of your choice to make the services reachable.
+	Service accounts for the controller and speaker, along with the RBAC permissions that the components need to function.
+
+
+2. metallb 에 자동 할당된 IP address pool 할당하기
+
+	# cat ipaddress_pools.yaml
+	apiVersion: metallb.io/v1beta1
+	kind: IPAddressPool
+	metadata:
+	  name: production
+ 	  namespace: metallb-system
+	spec:
+	  addresses:
+ 	 - 192.168.137.200-192.168.137.209
+	---
+	apiVersion: metallb.io/v1beta1
+	kind: L2Advertisement
+	metadata:
+	  name: l2-advert
+ 	  namespace: metallb-system
+
+
+	# kubectl apply -f ipaddress_pools.yaml
+	# kubectl get ipaddresspools.metallb.io -n metallb-system
+	NAME         AUTO ASSIGN   AVOID BUGGY IPS   ADDRESSES
+	production   true                  false                   ["192.168.137.200-192.168.137.209"]
+
+
+3. LoadBalancer 타입의 서비스 구성    
+
+	# cat  loadbalancer-hostname.yaml
+	apiVersion: v1
+	kind: Service
+	metadata:
+	  name: loadbalancer-hostname-service
+	spec:
+ 	 type: LoadBalancer
+  	selector:
+  	  app: hostname-server          
+ 	 ports:
+  	- protocol: TCP
+  	  port: 80              
+  	 targetPort: 80
+
+	# kubectl apply -f loadbalancer-hostname.yaml 
+
+
+4. LoadBalancer Type Service를 통해서 접근 확인 
+	# curl -sf http://192.168.137.200 | grep Hello 
+
+
+
+
+  kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/v0.13.7/config/manifests/metallb-native.yaml
+  ls
+  kubectl get pods -n metallb-system
+  kubectl get pods -n metallb-system
+  kubectl apply -f ipaddress_pools.yaml
+  ls
+  kubectl get ipaddresspools.metallb.io -n metallb-system
+  kubectl apply -f loadbalancer-hostname.yaml
+  kubectl apply -f headless.yaml
+  kubectl run -it --image nicolaka/netshoot testnet -- /bin/bash

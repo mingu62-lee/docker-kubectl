@@ -1,0 +1,326 @@
+쿠버네티스 클러스터 구성하기
+(참고 사이트 : https://kubernetes.io/docs/setup/production-environment/tools/kubeadm/install-kubeadm/)
+========================================================================
+
+0. 도커 실습에 사용되었던 컨테이너 모두 삭제하기
+# docker container rm -f $(docker container ps -aq)   
+
+1. 쿠버네티스 클러스터를 구성하기전 요구사항 확인
+	1) A compatible Linux host. 
+	The Kubernetes project provides generic instructions for Linux distributions based on Debian and Red Hat, and those distributions without a package manager.
+	2) 2 GB or more of RAM per machine (any less will leave little room for your apps).
+		# free 
+
+	3) 2 CPUs or more.
+		# lscpu  ( # cat /proc/cpuinfo ) 
+
+	4) Full network connectivity between all machines in the cluster (public or private network is fine)
+	5) Unique hostname, MAC address, and product_uuid for every node. 
+		- hostname : # hostname
+			     # hostnamectl set-hostname master
+		             # nano /etc/hosts (nano : 윈도우 메모장 수준 문서 편집기)
+			      	.... (맨 아래에 다음 내용 추가 )
+				192.168.137.100         master
+				192.168.137.101         worker1
+				192.168.137.102         worker2
+		
+			      ctrl+o (저장) --> enter --> ctrl+x (종료)
+
+		- MAC address : # ip addr , # ifconfig
+		- product_uuid : # cat /sys/class/dmi/id/product_uuid 
+
+	6)  cri-dockerd를 설치한다. (https://github.com/Mirantis/cri-dockerd ) 
+		- cri-dockerd를 구성하기 위한 소스파일을 다운로드 한다. 
+			 # cd ~
+			 # git clone https://github.com/Mirantis/cri-dockerd.git 
+			 
+
+			(https://github.com/Mirantis/cri-dockerd/releases : 실행 환경에 받는 파일을 다운로드한다.)
+			# wget https://github.com/Mirantis/cri-dockerd/releases/download/v0.3.3/cri-dockerd-0.3.3.amd64.tgz
+			# tar -zxvf cri-dockerd-0.3.3.amd64.tgz
+		- 다음 내용으로 스크립트를 생성한다. 
+			# nano install.sh 
+------------------------------------------------------------------------------------------
+# Run these commands as root
+
+cd cri-dockerd
+mkdir -p /usr/local/bin
+install -o root -g root -m 0755 cri-dockerd /usr/local/bin/cri-dockerd
+install packaging/systemd/* /etc/systemd/system
+sed -i -e 's,/usr/bin/cri-dockerd,/usr/local/bin/cri-dockerd,' /etc/systemd/system/cri-docker.service
+systemctl daemon-reload
+systemctl enable cri-docker.service
+systemctl enable --now cri-docker.socket
+------------------------------------------------------------------------------------------
+
+		- 위 스크립트를 실행한다. 
+			# chmod +x install.sh 
+			# ./install.sh 
+
+
+2. kubelet 의 적절한 동작을 위해서 swap을 사용하지 않는다. 
+# swapon && cat /etc/fstab 
+# swapoff -a && sed -i '/swap/s/^/#/' /etc/fstab     (stream editor: 일괄 문서 편집기) 
+
+
+3. 방화벽을 해제한다. 
+# ufw disable    (ufw ubuntu firewall)
+
+4. Linux 노드의 iptables가 bridged traffic을 정확하게 확인하고 제어 할 수 있도록 br_netfilter 모듈을 load하고 관련된 네트워크 파라미터를 설정한다. 
+--------------------------------------------------------
+# cat <<EOF | sudo tee /etc/modules-load.d/k8s.conf
+br_netfilter
+overlay 
+EOF
+--------------------------------------------------------
+# cat <<EOF | sudo tee /etc/sysctl.d/k8s.conf
+net.bridge.bridge-nf-call-ip6tables = 1
+net.bridge.bridge-nf-call-iptables = 1
+net.ipv4.ip_forward = 1
+EOF
+--------------------------------------------------------
+
+# sysctl --system
+
+
+5. kubeadm, kubelet and kubectl 패키지 설치하기 
+1) Update the apt package index and install packages needed to use the Kubernetes apt repository:
+	# apt-get update
+	# apt-get install -y apt-transport-https ca-certificates curl
+
+2) Download the Google Cloud public signing key:
+	# mkdir /etc/apt/keyrings
+	# curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-archive-keyring.gpg
+
+3) Add the Kubernetes apt repository:
+	# echo "deb [signed-by=/etc/apt/keyrings/kubernetes-archive-keyring.gpg] https://apt.kubernetes.io/ kubernetes-xenial main" | sudo tee /etc/apt/sources.list.d/kubernetes.list
+
+4) Update apt package index, install kubelet, kubeadm and kubectl, and pin their version:
+	# apt-get update
+	# apt-get install -y kubelet=1.24.17-00 kubeadm=1.24.17-00 kubectl=1.24.17-00
+	# apt-mark hold kubelet kubeadm kubectl
+
+6. Configuring the kubelet cgroup driver cgroupfs를 컨테이너 런타임과 kubelet 에 의해서 제어할 수 있도록 구성한다. 
+# mkdir /etc/docker  (기존의 디렉토리 있을 경우 다시 생성하지 않는다.) 
+--------------------------------------------------------
+# cat <<EOF | sudo tee /etc/docker/daemon.json
+{
+  "exec-opts": ["native.cgroupdriver=systemd"],
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "100m"
+  },
+  "storage-driver": "overlay2"
+}
+EOF
+
+# cat /etc/docker/daemon.json
+--------------------------------------------------------
+
+# systemctl enable docker              (부팅시 자동으로 docker 시작)
+# systemctl daemon-reload
+# systemctl restart docker
+
+# docker info 
+ Cgroup Driver: systemd
+
+worker1, worker2 생성을 위해 master 종료
+# poweroff 
+
+
+
+===================================================================================
+******  worker1, worker2 생성 ******  
+===================================================================================
+worker1 가상 머신 복제 
+--------------------------------------------------------
+Oracle VM VirtualBox  관리자 
+ubuntu 가상 머신 선택 
+	--> 마우스 우클릭 
+	--> 복제 
+
+	이름 : worker1
+	MAC 주소 정책 : 모든 네트워크 어댑터의 새 MAC  주소 생성 
+
+	--> 다음 
+	--> 복제 방식 --> 완전한 복제 --> Finish
+
+worker1 가상 머신 선택 
+	--> 시작 
+	--> 로그인 -->  root  / ubuntu 
+
+	# hostnamectl set-hostname  worker1 
+	# hostname
+	worker1 
+	
+	# ip addr 
+	# vi /etc/netplan/00-installer-config.yaml 
+	addresses: [192.168.137.100/24]
+			--> 192.168.137.101/24
+
+	
+	# netplan apply 
+	# ip addr 
+	enp0s3
+		inet 192.168.137.101/24
+
+worker2 가상 머신 복제 
+--------------------------------------------------------
+Oracle VM VirtualBox  관리자 
+ubuntu 가상 머신 선택 
+	--> 우클릭 
+	--> 복제 
+
+	이름 : worker2
+	MAC 주소 정책 : 모든 네트워크 어댑터의 새 MAC  주소 생성 
+
+	--> 다음 
+	--> 복제 방식 --> 완전한 복제 --> Finish
+
+
+worker2 가상 머신 선택 
+	--> 시작 
+	--> 로그인 -->  root  / ubuntu 
+ 
+
+	# hostnamectl set-hostname  worker2 
+	# hostname
+	worker2
+	
+	# ip addr 
+	# vi /etc/netplan/00-installer-config.yaml 
+	addresses: [192.168.137.100/24]
+			--> 192.168.137.102/24
+	# netplan apply 
+	# ip addr 
+	enp0s3
+		inet 192.168.137.102/24
+
+Oracle VM VirtualBox  관리자 
+ubuntu 가상 머신 선택 
+	--> 시작 
+
+
+NatNetwork port-forwarding 설정 
+--------------------------------------------------------------------------------
+Oracle VM VirtualBox  관리자
+도구 --> 리스트 메뉴 
+	--> 네트워크 --> NatNetworks (탭) --> 포트포워딩
+	--> [+]
+
+	이름      프로토콜   호스트IP          호스트 포트      게스트IP            게스트포트
+	worker1	TCP      192.168.56.1       101	       192.168.137.101	   22
+	worker2	TCP      192.168.56.1       102	       192.168.137.102	   22
+
+
+worker1, worker2 putty 세션 연결하기
+----------------------------------------------------
+AWS 관리 콘솔 
+k8s-worker1 선택 
+	--> 세부정보 --> 퍼블릭 IPv4 주소 복사
+
+putty 실행 
+	--> ubuntu 선택 --> [Load] 버튼 클릭 
+	--> Hostname 에 퍼블릭 IPv4 주소 붙여넣기 
+	--> Colours
+	--> Session --> Saved Sessions : worker1 --> [Save]
+
+주소 복사
+
+putty 실행 
+	--> ubuntu 선택 --> [Load] 버튼 클릭 
+	--> Hostname 에 퍼블릭 IPv4 주소 붙여넣기 
+	--> Colours
+	--> Session --> Saved Sessions : worker2 --> [Save]
+
+
+========================================================================
+
+
+
+7. (마스터 노드에서만 실행 )kubeadm init 명령을 통해서 클러스터를 생성한다. 
+
+# kubeadm init --cri-socket=unix:///var/run/cri-dockerd.sock 
+
+
+8. 쿠버네티스 클러스터에 조인하기 위한 명령어 구문을 저장해둔다.
+
+# cat > token.sh
+kubeadm join 192.168.137.101:6443 --token -------------- \
+        --discovery-token-ca-cert-hash sha256:------------------------------------------------- \
+        --cri-socket=unix:///var/run/cri-dockerd.sock (enter)
+(ctrl+d)
+
+9. root 사용자가 쿠버네티스 클러스터의 API에 접근할 수 있도록 인증하기 위해서 kubeconfig 파일의 위치를  KUBECONFIG 쉘 변수에 설정한다.
+
+# vi ~/.bashrc
+export KUBECONFIG=/etc/kubernetes/admin.conf      <---- 파일 맨 아래 줄에 추가한다.
+
+# source ~/.bashrc
+# echo $KUBECONFIG 
+/etc/kubernetes/admin.conf
+
+
+10. Pod가 서로 통신 할 수 있도록 CNI (Container Network Interface) 기반 Pod 네트워크 추가 기능 구성한다.
+ 네트워크가 설치되기 전에 클러스터 DNS (CoreDNS)가 시작되지 않는다.
+
+calico (https://docs.projectcalico.org/getting-started/kubernetes/self-managed-onprem/onpremises)
+# curl https://raw.githubusercontent.com/projectcalico/calico/v3.25.0/manifests/calico.yaml -O
+# kubectl apply -f calico.yaml
+
+
+11. [마스터 노드에서만 실행] 클러스터 구성 상태 확인 
+# kubectl get nodes
+# kubectl get pods --all-namespaces
+or 
+# kubectl get pods -A
+
+
+
+12. [마스터 노드에서만 실행] 생성한 # kubeadm join 구문이 든 쉘 스크립트를 워커 노드로 복사한다. 
+#  scp token.sh worker1:/root/token.sh            
+#  scp token.sh worker2:/root/token.sh
+
+
+
+13. [워커 노드에서만 실행] 복사된 스크립트를 실행하여 클러스터에 조인한다. 
+
+worker1, worker2 # chmod +x token.sh 
+worker1, worker2 # ./token.sh 
+
+
+14. [마스터 노드에서만 실행] 클러스터 조인 상태 확인 
+# kubectl get nodes
+NAME      STATUS   ROLES                       AGE    VERSION
+master     Ready      control-plane,master     13d     v1.24.0
+worker1    Ready     <none>                    13d     v1.24.0
+worker2    Ready     <none>                    13d     v1.24.0
+
+# kubectl get pods --all-namespaces
+# kubectl get pods -A
+
+
+
+token 조회/발행
+----------------------------
+# kubeadm token list
+# kubeadm token create
+
+discovery-token-ca-cert-hash 조회 
+-----------------------------------
+# openssl x509 -pubkey -in /etc/kubernetes/pki/ca.crt | openssl rsa -pubin -outform der 2>/dev/null | openssl dgst -sha256 -hex | sed 's/^.* //'
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
